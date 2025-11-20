@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>픽셀 러너 게임</title>
+    <style>
+        /* 기본 스타일: 흰색 배경, 검은색 전경 */
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: white;
+            font-family: monospace, sans-serif; /* 픽셀 느낌을 위해 모노스페이스 폰트 사용 */
+            color: black;
+            overflow: hidden;
+        }
+
+        /* 게임 컨테이너 및 캔버스 스타일 */
+        #game-container {
+            border: 2px solid black;
+            box-shadow: 4px 4px 0 black;
+            background-color: white;
+            position: relative;
+            max-width: 90vw; /* 화면 너비에 맞게 조정 */
+            aspect-ratio: 16 / 5; /* 크롬 게임과 유사한 비율 */
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* 점수판 스타일 */
+        #score-board {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+
+        /* 게임 오버 메시지 스타일 */
+        #game-over-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none; /* 초기에는 숨김 */
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(255, 255, 255, 0.8); /* 반투명 흰색 오버레이 */
+            text-align: center;
+            font-size: 2em;
+            font-weight: bold;
+        }
+
+        #game-over-screen h2 {
+            margin: 0 0 10px 0;
+            font-size: 1.5em;
+        }
+
+        #game-over-screen p {
+            margin: 0;
+            font-size: 0.8em;
+        }
+
+        @media (max-width: 600px) {
+            #score-board {
+                font-size: 1.2em;
+            }
+            #game-over-screen {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="score-board">점수: 0</div>
+        <div id="game-over-screen">
+            <h2>게임 오버!</h2>
+            <p>스페이스바를 눌러 다시 시작하세요.</p>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreBoard = document.getElementById('score-board');
+        const gameOverScreen = document.getElementById('game-over-screen');
+
+        // 게임 설정 변수
+        let gameStatus = 'ready'; // 'ready', 'playing', 'over'
+        let score = 0; // 이제 통과한 장애물의 개수를 저장합니다.
+        let animationFrameId;
+        let gameSpeed = 5; // 초기 게임 속도 (픽셀/프레임)
+        const GRAVITY = 0.8;
+        const JUMP_VELOCITY = -15;
+
+        // 화면 크기 조정 및 초기 설정
+        const CANVAS_WIDTH = 600;
+        const CANVAS_HEIGHT = 150;
+
+        function resizeCanvas() {
+            // 캔버스 크기를 고정된 비율로 설정하고 CSS로 반응형 처리
+            canvas.width = CANVAS_WIDTH;
+            canvas.height = CANVAS_HEIGHT;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // ------------------
+        // 공룡 객체 (플레이어)
+        // ------------------
+        const dino = {
+            x: 50,
+            y: CANVAS_HEIGHT - 20 - 15, // 바닥에서 15픽셀 위
+            width: 20,
+            height: 40,
+            yVelocity: 0,
+            groundY: CANVAS_HEIGHT - 20 - 40, // 공룡의 발 위치 (캔버스 높이 - 바닥선 높이 - 공룡 높이)
+            isJumping: false,
+
+            draw() {
+                ctx.fillStyle = 'black';
+                // 공룡 몸통 (간단한 사각형)
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                // 다리 또는 눈을 표현하는 작은 디테일 추가
+                ctx.fillRect(this.x + 5, this.y + this.height - 5, 5, 5);
+                ctx.fillRect(this.x + 10, this.y + this.height - 5, 5, 5);
+            },
+
+            update() {
+                // 중력 적용
+                this.yVelocity += GRAVITY;
+                this.y += this.yVelocity;
+
+                // 바닥 충돌 처리
+                if (this.y >= this.groundY) {
+                    this.y = this.groundY;
+                    this.yVelocity = 0;
+                    this.isJumping = false;
+                }
+            },
+
+            jump() {
+                if (!this.isJumping) {
+                    this.isJumping = true;
+                    this.yVelocity = JUMP_VELOCITY;
+                }
+            },
+
+            reset() {
+                this.y = this.groundY;
+                this.yVelocity = 0;
+                this.isJumping = false;
+            }
+        };
+
+        // ------------------
+        // 장애물 객체 (Cactus, Bird)
+        // ------------------
+        class Obstacle {
+            constructor(type) {
+                this.type = type; // 'cactus' 또는 'bird'
+                this.x = CANVAS_WIDTH;
+                this.width = (type === 'cactus') ? 15 : 20;
+                this.height = (type === 'cactus') ? (15 + Math.random() * 20) : 20; // 선인장은 높이 가변
+                this.y = (type === 'cactus')
+                    ? dino.groundY + dino.height - this.height // 바닥에 붙어 있음
+                    : dino.groundY + dino.height - this.height - (Math.random() > 0.5 ? 20 : 50); // 새는 공중 (2단계 높이)
+            }
+
+            draw() {
+                ctx.fillStyle = 'black';
+                if (this.type === 'cactus') {
+                    // 선인장: 단순한 막대 모양
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                    // 선인장 가지처럼 작은 돌기 추가
+                    ctx.fillRect(this.x + this.width, this.y + this.height * 0.4, 5, 5);
+                    ctx.fillRect(this.x - 5, this.y + this.height * 0.7, 5, 5);
+                } else if (this.type === 'bird') {
+                    // 새: V자 또는 날개 모양 (간단한 사각형 2개로 표현)
+                    ctx.fillRect(this.x, this.y, this.width, this.height / 2); // 몸통
+                    ctx.fillRect(this.x + 5, this.y + this.height / 2, this.width - 10, this.height / 2); // 날개(하단)
+                }
+            }
+
+            update() {
+                this.x -= gameSpeed;
+            }
+        }
+
+        let obstacles = [];
+        let timeSinceLastObstacle = 0;
+        let obstacleInterval = 100; // 초기 장애물 생성 간격
+
+        // ------------------
+        // 충돌 감지
+        // ------------------
+        function checkCollision(dino, obstacle) {
+            // AABB(Axis-Aligned Bounding Box) 충돌 감지
+            return dino.x < obstacle.x + obstacle.width &&
+                   dino.x + dino.width > obstacle.x &&
+                   dino.y < obstacle.y + obstacle.height &&
+                   dino.y + dino.height > obstacle.y;
+        }
+
+        // ------------------
+        // 게임 루프 및 로직
+        // ------------------
+
+        function updateGame() {
+            if (gameStatus !== 'playing') return;
+
+            // 1. 공룡 업데이트
+            dino.update();
+
+            // 2. 장애물 생성 및 업데이트
+            timeSinceLastObstacle++;
+            // 게임 속도에 따라 장애물 간격 조정
+            obstacleInterval = Math.max(70, 150 - gameSpeed * 5);
+
+            if (timeSinceLastObstacle > obstacleInterval) {
+                const type = Math.random() < 0.7 ? 'cactus' : 'bird'; // 선인장이 더 자주 나옴
+                obstacles.push(new Obstacle(type));
+                timeSinceLastObstacle = 0;
+            }
+
+            // 3. 장애물 이동 및 충돌 검사
+            obstacles.forEach((obstacle, index) => {
+                obstacle.update();
+
+                // 충돌 감지
+                if (checkCollision(dino, obstacle)) {
+                    gameStatus = 'over';
+                    return; // 루프 중단
+                }
+
+                // 화면을 벗어난 장애물 제거
+                if (obstacle.x + obstacle.width < 0) {
+                    obstacles.splice(index, 1);
+                    score++; // <<< 수정된 부분: 장애물을 통과할 때마다 점수(통과 횟수) 1 증가
+                }
+            });
+
+            // 4. 점수 및 속도 업데이트
+            // 점수 업데이트: 통과 횟수 * 10으로 표시
+            scoreBoard.textContent = `점수: ${score * 10}`;
+
+            // 속도 업데이트: 장애물 5개를 통과할 때마다 속도 증가 (난이도 상승)
+            if (score > 0 && score % 5 === 0 && gameSpeed < 15) {
+                gameSpeed += 0.5;
+            }
+        }
+
+        function drawGame() {
+            // 1. 캔버스 초기화
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            // 2. 바닥선 그리기
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, CANVAS_HEIGHT - 20);
+            ctx.lineTo(CANVAS_WIDTH, CANVAS_HEIGHT - 20);
+            ctx.stroke();
+
+            // 3. 공룡 그리기
+            dino.draw();
+
+            // 4. 장애물 그리기
+            obstacles.forEach(obstacle => obstacle.draw());
+        }
+
+        function gameLoop() {
+            if (gameStatus === 'playing') {
+                updateGame();
+                drawGame();
+                animationFrameId = requestAnimationFrame(gameLoop);
+            } else if (gameStatus === 'over') {
+                cancelAnimationFrame(animationFrameId);
+                gameOverScreen.style.display = 'flex';
+            } else if (gameStatus === 'ready') {
+                // 대기 상태에서는 초기 화면을 보여줌
+                drawGame();
+            }
+        }
+
+        function startGame() {
+            if (gameStatus !== 'playing') {
+                // 상태 초기화
+                gameStatus = 'playing';
+                score = 0; // 통과 횟수 초기화
+                gameSpeed = 5;
+                obstacles = [];
+                timeSinceLastObstacle = 0;
+                dino.reset();
+                gameOverScreen.style.display = 'none';
+
+                // 게임 루프 시작
+                gameLoop();
+            }
+        }
+
+        // ------------------
+        // 입력 이벤트 처리
+        // ------------------
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.key === ' ') {
+                e.preventDefault(); // 스크롤 방지
+                if (gameStatus === 'playing') {
+                    dino.jump();
+                } else if (gameStatus === 'ready' || gameStatus === 'over') {
+                    startGame();
+                }
+            }
+        });
+
+        // 초기 시작 메시지 표시
+        function init() {
+            dino.reset();
+            drawGame();
+            gameOverScreen.style.display = 'flex';
+            gameOverScreen.innerHTML = '<h2>Press SPACE to Start</h2><p>점프는 스페이스바</p>';
+        }
+
+        window.onload = init;
+
+    </script>
+</body>
+</html>
